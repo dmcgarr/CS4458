@@ -29,16 +29,49 @@ class AESEncryption:
     @classmethod
     def from_nbits(cls, nbits: int = 256, mode: str = "CBC"):
         """Creates an AES encryption object with a new key with the given number of bits."""
-        pass
+        bytes = nbits // 8
+        key = get_random_bytes(bytes)
+        return cls(key, mode)
 
     def encrypt(self, message: bytes) -> bytes:
         """Encrypts the given message using AES."""
-        pass
+        if (self.mode == "CBC" or self.mode == "CFB" or self.mode == "OFB"):
+            cipher = AES.new(self.key, self.MODES_MAP[self.mode])
+            self.iv = cipher.iv
+            if (self.mode == "CBC"):
+                ciphertext = cipher.encrypt(pad(message, AES.block_size))
+                return ciphertext
+            else: ## CFB and OFB
+                ciphertext = cipher.encrypt(message)
+                return ciphertext
+        elif (self.mode == "CTR"):
+            cipher = AES.new(self.key, self.MODES_MAP[self.mode])
+            self.nonce = cipher.nonce
+            ciphertext = cipher.encrypt(message)
+            return ciphertext
+        elif (self.mode == "ECB"): ## ECB mode
+            cipher = AES.new(self.key, self.MODES_MAP[self.mode])
+            ciphertext = cipher.encrypt(pad(message, AES.block_size))
+            return ciphertext
 
     def decrypt(self, message: bytes) -> bytes:
         """Decrypts the given message using AES."""
-        pass
-
+        if (self.mode == "CBC" or self.mode == "CFB" or self.mode == "OFB"):
+            cipher = AES.new(self.key, self.MODES_MAP[self.mode], iv=self.iv)
+            if (self.mode == "CBC"):
+                plaintext = unpad(cipher.decrypt(message), AES.block_size)
+                return plaintext
+            else: ## CFB and OFB
+                plaintext = cipher.decrypt(message)
+                return plaintext
+        elif (self.mode == "CTR"):
+            cipher = AES.new(self.key, self.MODES_MAP[self.mode], nonce=self.nonce)
+            plaintext = cipher.decrypt(message)
+            return plaintext
+        elif (self.mode == "ECB"): ## ECB mode
+            cipher = AES.new(self.key, self.MODES_MAP[self.mode])
+            plaintext = unpad(cipher.decrypt(message), AES.block_size)
+            return plaintext
 
 class RSAEncryption:
     """Encrypts/decrypts messages using RSA encryption with the given key."""
@@ -49,24 +82,33 @@ class RSAEncryption:
     @classmethod
     def from_nbits(cls, nbits: int = 2048):
         """Creates an RSA encryption object with a new key with the given number of bits."""
-        pass
+        keypair = RSA.generate(nbits)
+        return cls(keypair)
 
     @classmethod
     def from_file(cls, filename: str, passphrase: str = None):
         """Creates an RSA encryption object with a key loaded from the given file."""
-        pass
+        key = RSA.import_key(open(filename).read(), passphrase)
+        return cls(key)
 
     def to_file(self, filename: str, passphrase: str = None):
         """Saves this RSA encryption object's key to the given file."""
-        pass
+        encrypted_key = self.key.export_key(passphrase=passphrase, pkcs=8, protection="scryptAndAES128-CBC")
+        with open(filename, "wb") as file:
+            file.write(encrypted_key)
+            file.close()
 
     def encrypt(self, message: bytes) -> bytes:
         """Encrypts the given message using RSA."""
-        pass
+        cipher = PKCS1_OAEP.new(self.key.publickey())
+        ciphertext = cipher.encrypt(message)
+        return ciphertext
 
     def decrypt(self, message: bytes) -> bytes:
         """Decrypts the given message using RSA."""
-        pass
+        cipher = PKCS1_OAEP.new(self.key)
+        plaintext = cipher.decrypt(message)
+        return plaintext
 
 
 class HybridEncryption:
@@ -80,14 +122,23 @@ class HybridEncryption:
         Encrypts the given message using a hybrid cryptosystem (AES and RSA).
         Returns the encrypted message and the encrypted symmetric key.
         """
-        pass
+        aes = AESEncryption.from_nbits(256)
+        sym_key = aes.key
+        encrypt_mssg = aes.encrypt(message)
+        self.iv = aes.iv
+        encrypt_key = self.rsa.encrypt(sym_key)
+        return encrypt_mssg, encrypt_key
 
     def decrypt(self, message: bytes, message_key: bytes) -> bytes:
         """
         Encrypts the given message using a hybrid cryptosystem (AES and RSA).
         Requires the encrypted symmetric key that the message was encrypted with.
         """
-        pass
+        sym_key = self.rsa.decrypt(message_key)
+        aes = AESEncryption(sym_key)
+        aes.iv = self.iv
+        plaintext = aes.decrypt(message)
+        return plaintext
 
 
 class DigitalSignature:
@@ -98,11 +149,19 @@ class DigitalSignature:
 
     def sign(self, message: bytes) -> bytes:
         """Signs the given message using RSA and SHA-256 and returns the digital signature."""
-        pass
+        hash_object = SHA256.new(message)
+        signature = pkcs1_15.new(self.rsa.key).sign(hash_object)
+        return signature
 
     def verify(self, message: bytes, signature: bytes) -> bool:
         """Verifies the digital signature of the given message using RSA and SHA-256."""
-        pass
+        hash_object = SHA256.new(message)
+        public_key = self.rsa.key.publickey()
+        try:
+            pkcs1_15.new(public_key).verify(hash_object, signature)
+            return True
+        except(ValueError,TypeError):
+            return False 
 
 
 if __name__ == "__main__":
@@ -121,7 +180,8 @@ if __name__ == "__main__":
         aes = AESEncryption.from_nbits(256, mode)
         encrypted_msg = aes.encrypt(MESSAGE)
         decrypted_msg = aes.decrypt(encrypted_msg)
-        print(f"[AES] {mode} Successfully Decrypted:", MESSAGE == decrypted_msg)
+        print(f"[AES] {mode} Successfully Decrypted:",
+              MESSAGE == decrypted_msg)
 
     # RSA
     rsa = RSAEncryption.from_file(RSA_KEY, RSA_PASSPHRASE)
@@ -153,10 +213,12 @@ if __name__ == "__main__":
     modified_msg = bytes(modified_msg)
 
     print("[SIG] Original Valid:", signer.verify(encrypted_msg, msg_signature))
-    print("[SIG] Modified NOT Valid:", not signer.verify(modified_msg, msg_signature))
+    print("[SIG] Modified NOT Valid:",
+          not signer.verify(modified_msg, msg_signature))
 
     decrypted_msg = hybrid.decrypt(encrypted_msg, encrypted_msg_key)
-    print("[SIG] Original Successfully Decrypted:", MESSAGE_LONG == decrypted_msg)
+    print("[SIG] Original Successfully Decrypted:",
+          MESSAGE_LONG == decrypted_msg)
 
     decrypted_msg = hybrid.decrypt(modified_msg, encrypted_msg_key)
     print("[SIG] Modified Fails Decryption:", MESSAGE_LONG != decrypted_msg)
